@@ -1,5 +1,6 @@
 from diffusers import StableDiffusionPipeline
 from diffusers.pipelines.stable_diffusion.pipeline_output import StableDiffusionPipelineOutput
+import torch.utils.checkpoint as checkpoint
 import torch
 from typing import List, Optional, Union, Callable, Any, Dict
 
@@ -157,6 +158,7 @@ def patched_call(
     # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
     extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 
+
     # 7. Denoising loop
     num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
     with self.progress_bar(total=num_inference_steps) as progress_bar:
@@ -165,14 +167,29 @@ def patched_call(
             latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
             latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
-            # predict the noise residual
-            noise_pred = self.unet(
-                latent_model_input,
-                t,
-                encoder_hidden_states=prompt_embeds,
-                cross_attention_kwargs=cross_attention_kwargs,
-                return_dict=False,
-            )[0]
+#            # predict the noise residual
+#            noise_pred = self.unet(
+#                latent_model_input,
+#                t,
+#                encoder_hidden_states=prompt_embeds,
+#                cross_attention_kwargs=cross_attention_kwargs,
+#                return_dict=False,
+#            )[0]
+
+
+            # enables gradient checkpointing on the unet
+            def run_unet(_latent_model_input):
+                noise_pred = self.unet(
+                    _latent_model_input,
+                    t,
+                    encoder_hidden_states=prompt_embeds,
+                    cross_attention_kwargs=cross_attention_kwargs,
+                    return_dict=False,
+                )[0]
+                return noise_pred
+
+            noise_pred= checkpoint.checkpoint(run_unet, latent_model_input, use_reentrant=False)
+
 
             # perform guidance
             if do_classifier_free_guidance:
