@@ -54,3 +54,12 @@ print("per token gradient mean", input_token_embedding_grad.mean(-1))
 
 plt.imshow(transforms.ToPILImage()(image), interpolation="bicubic")
 plt.savefig("image.jpg")
+
+# Dot product gradient with embedding
+# Retrieve the actual embeddings for the given input_ids
+input_token_embedding = pipe.text_encoder.text_model.embeddings.token_embedding.weight[input_ids]
+# Dot product the gradients with the embeddings
+# Sum the element wise multiplication across the last dimension
+dot_product = (input_token_embedding * input_token_embedding_grad).sum(-1) 
+# Print the dot product
+print("Dot product of gradients with embeddings:", dot_product)

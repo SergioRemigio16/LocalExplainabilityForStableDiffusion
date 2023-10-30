@@ -1,0 +1,6 @@
+transformers
+torch 
+matplotlib
+torchvision
+accelerate
+chardet

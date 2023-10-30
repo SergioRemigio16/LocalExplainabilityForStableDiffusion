@@ -130,7 +130,6 @@ def patched_call(
         prompt_embeds=prompt_embeds,
         negative_prompt_embeds=negative_prompt_embeds,
         lora_scale=lora_scale,
-        clip_skip=clip_skip,
     )
     # For classifier free guidance, we need to do two forward passes.
     # Here we concatenate the unconditional and text embeddings into a single batch
