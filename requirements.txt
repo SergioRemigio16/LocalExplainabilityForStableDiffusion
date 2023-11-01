@@ -1,6 +1,5 @@
-transformers
-torch 
-matplotlib
-torchvision
-accelerate
-chardet
+diffusers==0.21.4
+matplotlib==3.8.0
+torch==2.1.0
+torchvision==0.16.0
+transformers==4.34.1
