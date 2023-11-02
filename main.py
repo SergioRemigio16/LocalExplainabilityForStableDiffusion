@@ -6,27 +6,32 @@ import matplotlib.pyplot as plt
 
 from patched_call import patched_call
 import clip_image_processor
-
+import clip_text_forward_patch
 
 device='cuda'
+dtype = torch.bfloat16
+
+# device='cpu'
+# dtype = torch.float32
 
 
 # loads stable diffusion pipe
 model_id = "runwayml/stable-diffusion-v1-5"
-pipe = StableDiffusionPipeline.from_pretrained(model_id, torch_dtype=torch.bfloat16)
+pipe = StableDiffusionPipeline.from_pretrained(model_id, torch_dtype=dtype)
 
 # loads Human Preference Score v2
-clip_model = CLIPModel.from_pretrained("adams-story/HPSv2-hf", torch_dtype=torch.bfloat16).to(device)
+clip_model = CLIPModel.from_pretrained("adams-story/HPSv2-hf", torch_dtype=dtype).to(device)
 clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32") # uses the same exact vanilla clip processor
 
 pipe.safety_checker=None
-
 
 pipe = pipe.to(device)
 pipe.vae.requires_grad_(False)
 pipe.unet.requires_grad_(False)
 pipe.text_encoder.requires_grad_(False)
-pipe.text_encoder.text_model.embeddings.token_embedding.requires_grad_(True)
+
+# Use our patched clip_text_forward method
+pipe.text_encoder.text_model.forward = lambda *args, **kwargs: clip_text_forward_patch(pipe.text_encoder.text_model, *args, **kwargs)
 
 prompt = "a photo of an apple"
 
@@ -43,23 +48,16 @@ clip_outputs = clip_model(pixel_values=clip_image_inputs.unsqueeze(0), **clip_te
 loss = - clip_outputs.logits_per_image
 loss.backward()
 
-print("grad sum", pipe.text_encoder.text_model.embeddings.token_embedding.weight.grad.sum())
 
-input_ids = pipe.tokenizer(prompt, return_tensors="pt",)['input_ids'].to(pipe.device)[0]
+# Get the global variable we saved 
+hidden_states = clip_text_forward_patch.global_hidden_states
 
-# shape: (input_ids, 768)
-input_token_embedding_grad = pipe.text_encoder.text_model.embeddings.token_embedding.weight.grad[input_ids]
-
-print("per token gradient mean", input_token_embedding_grad.mean(-1))
 
 plt.imshow(transforms.ToPILImage()(image), interpolation="bicubic")
 plt.savefig("image.jpg")
 
-# Dot product gradient with embedding
-# Retrieve the actual embeddings for the given input_ids
-input_token_embedding = pipe.text_encoder.text_model.embeddings.token_embedding.weight[input_ids]
 # Dot product the gradients with the embeddings
 # Sum the element wise multiplication across the last dimension
-dot_product = (input_token_embedding * input_token_embedding_grad).sum(-1) 
+dot_product = (hidden_states * hidden_states.grad).sum(-1) 
 # Print the dot product
 print("Dot product of gradients with embeddings:", dot_product)
