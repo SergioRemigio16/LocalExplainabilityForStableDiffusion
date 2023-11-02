@@ -7,7 +7,7 @@ from transformers.models.clip.modeling_clip import _make_causal_mask
 from transformers.models.clip.modeling_clip import _expand_mask
 
 
-global_hidden_states = None
+global_hidden_states = []
 
 
 def forward(
@@ -39,7 +39,10 @@ def forward(
 
     # Patched Code
     hidden_states.requires_grad_(True)
-    global_hidden_states = hidden_states
+    #global global_hidden_states
+    global_hidden_states.append(hidden_states)
+    print("saving global hidden states")
+    # Patched Code
 
     # CLIP's text model uses causal mask, prepare it here.
     # https://github.com/openai/CLIP/blob/cfcffb90e69f37bf2ff1e988237a0fbe41f33c04/clip/model.py#L324
@@ -61,26 +64,13 @@ def forward(
     last_hidden_state = encoder_outputs[0]
     last_hidden_state = self.final_layer_norm(last_hidden_state)
 
-    if self.eos_token_id == 2:
-        # The `eos_token_id` was incorrect before PR #24773: Let's keep what have been done here.
-        # A CLIP model with such `eos_token_id` in the config can't work correctly with extra new tokens added
-        # ------------------------------------------------------------
-        # text_embeds.shape = [batch_size, sequence_length, transformer.width]
-        # take features from the eot embedding (eot_token is the highest number in each sequence)
-        # casting to torch.int for onnx compatibility: argmax doesn't support int64 inputs with opset 14
-        pooled_output = last_hidden_state[
-            torch.arange(last_hidden_state.shape[0], device=last_hidden_state.device),
-            input_ids.to(dtype=torch.int, device=last_hidden_state.device).argmax(dim=-1),
-        ]
-    else:
-        # The config gets updated `eos_token_id` from PR #24773 (so the use of exta new tokens is possible)
-        pooled_output = last_hidden_state[
-            torch.arange(last_hidden_state.shape[0], device=last_hidden_state.device),
-            # We need to get the first position of `eos_token_id` value (`pad_token_ids` might equal to `eos_token_id`)
-            (input_ids.to(dtype=torch.int, device=last_hidden_state.device) == self.eos_token_id)
-            .int()
-            .argmax(dim=-1),
-        ]
+    # text_embeds.shape = [batch_size, sequence_length, transformer.width]
+    # take features from the eot embedding (eot_token is the highest number in each sequence)
+    # casting to torch.int for onnx compatibility: argmax doesn't support int64 inputs with opset 14
+    pooled_output = last_hidden_state[
+        torch.arange(last_hidden_state.shape[0], device=last_hidden_state.device),
+        input_ids.to(dtype=torch.int, device=last_hidden_state.device).argmax(dim=-1),
+    ]
 
     if not return_dict:
         return (last_hidden_state, pooled_output) + encoder_outputs[1:]
@@ -91,4 +81,5 @@ def forward(
         hidden_states=encoder_outputs.hidden_states,
         attentions=encoder_outputs.attentions,
     )
+
 

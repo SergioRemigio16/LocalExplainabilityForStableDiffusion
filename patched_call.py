@@ -4,6 +4,7 @@ import torch.utils.checkpoint as checkpoint
 import torch
 from typing import List, Optional, Union, Callable, Any, Dict
 
+
 def patched_call(
     self: StableDiffusionPipeline,
     prompt: Union[str, List[str]] = None,
