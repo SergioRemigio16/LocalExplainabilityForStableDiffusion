@@ -10,11 +10,15 @@ import clip_image_processor
 import clip_text_forward_patch
 
 device='cuda'
-dtype = torch.bfloat16
-
+dtype = torch.float32
 # device='cpu'
 # dtype = torch.float32
 
+# Set seed for deterministic outcome
+seed = 16
+torch.manual_seed(seed) 
+torch.cuda.manual_seed_all(seed) 
+generator = torch.Generator(device=device).manual_seed(seed)
 
 # loads stable diffusion pipe
 model_id = "runwayml/stable-diffusion-v1-5"
@@ -40,7 +44,15 @@ prompt = "apple photograph black moldy discusting worm-filled rotten "
 prompt = "A photograph of a bowl full of berries"
 
 
-out = patched_call(pipe, prompt, output_type='pt', num_inference_steps = 40, guidance_scale = 8.0, eta=1.5)
+out = patched_call(
+    pipe, 
+    prompt, 
+    output_type='pt', 
+    num_inference_steps = 40, 
+    guidance_scale = 8.0, 
+    eta=1.5,
+    generator=generator
+)
 image = out.images[0]
 
 # processes image using patched clip processor
@@ -82,6 +94,6 @@ print('sum',dot_product.sum())
 
 
 for attribution, token_id in zip(dot_product, input_ids):
-    print(f'token: "{pipe.tokenizer.decode(token_id)}"   attribution: {attribution.item() * 100:.1f}%')
+    print(f'token: "{pipe.tokenizer.decode(token_id):<15}"   attribution: {attribution.item() * 100:6.1f}%')
 # Print the dot product
 print("Dot product of gradients with embeddings:", dot_product)
