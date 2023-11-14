@@ -5,7 +5,7 @@ from transformers import CLIPImageProcessor
 
 def preprocess(x: torch.Tensor, clip_image_processor: CLIPImageProcessor):
     # resize
-    c, h, w = x.shape
+    *b, c, h, w = x.shape
     to_h, to_w = clip_image_processor.crop_size['height'], clip_image_processor.crop_size['width']
     x= torchvision.transforms.Resize((to_h, to_w))(x)
 
