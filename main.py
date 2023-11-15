@@ -6,6 +6,11 @@ from torchvision import transforms
 import torch
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+from PIL import Image, ImageDraw, ImageFont
+from torchvision import transforms
+
 
 from patched_call import patched_call
 from patched_call_lcm import patched_call_lcm
@@ -106,7 +111,7 @@ def integrated_grads(pipe, prompts, loss_fn, pipe_kwargs={}, ):
 
     gs_end = 1.7
 
-    ig_steps = 10
+    ig_steps = 2
 
 
     grads = 0.0
@@ -152,3 +157,62 @@ for attribution, token_id in zip(dot_product, input_ids):
     print(f'token: "{pipe.tokenizer.decode(token_id):<15}"   attribution: {attribution.item() * 100:6.1f}%')
 # Print the dot product
 print("Dot product of gradients with embeddings:", dot_product)
+
+
+
+
+
+# Convert the PyTorch tensor to a PIL image
+original_image = transforms.ToPILImage()(image).convert("RGBA")
+
+# Prepare text data from dot_product
+words = [pipe.tokenizer.decode(token_id) for token_id in input_ids]
+attributions = [attribution.item() * 100 for attribution in dot_product]
+
+# Create a new image for heatmap text
+heatmap_height = 200
+heatmap_image = Image.new("RGBA", (original_image.width, heatmap_height), (255, 255, 255, 0))
+draw = ImageDraw.Draw(heatmap_image)
+
+# Use a specific TrueType font with increased size
+font_size = 16
+font_path = 'OpenSans-Regular.ttf'
+font = ImageFont.truetype(font_path, font_size)
+
+# Initialize the position for drawing text
+x_pos, y_pos = 0, 0
+line_height = font.getlength('Ag') + 5  # Height of a line of text
+
+def will_text_exceed_width(text, x_pos, image_width, font):
+    return x_pos + font.getlength(text) > image_width
+
+def adjust_value(attribution):
+    if .30 <= attribution < .50:
+        return .30
+    elif .50 < attribution <= .70:
+        return .70
+    else:
+        return attribution
+
+
+# Create heatmap based on attributions
+for word, attribution in zip(words[1:], attributions[1:]):
+    if will_text_exceed_width(word, x_pos, heatmap_image.width, font):
+        # Move to next line if the word exceeds the width
+        x_pos = 0
+        y_pos += line_height
+
+    color_value = (attribution / 100) * 5
+    color_value = adjust_value(color_value)
+    color = mcolors.to_hex(plt.cm.RdBu(1 - color_value)) # using hot colormap
+    draw.text((x_pos, y_pos), word, fill=color, font=font)
+    x_pos += font.getlength(word) + 5  # Adjust x position for next word
+
+# Combine original image and heatmap
+combined_image = Image.new("RGBA", (original_image.width, original_image.height + heatmap_height))
+combined_image.paste(original_image, (0, 0))
+combined_image.paste(heatmap_image, (0, original_image.height))
+
+# Convert to RGB and save
+combined_image_rgb = combined_image.convert("RGB")
+combined_image_rgb.save('./modified_image.jpg', 'JPEG')
