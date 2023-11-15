@@ -162,6 +162,7 @@ print("Dot product of gradients with embeddings:", dot_product)
 
 
 
+
 # Convert the PyTorch tensor to a PIL image
 original_image = transforms.ToPILImage()(image).convert("RGBA")
 
@@ -186,25 +187,25 @@ line_height = font.getlength('Ag') + 5  # Height of a line of text
 def will_text_exceed_width(text, x_pos, image_width, font):
     return x_pos + font.getlength(text) > image_width
 
-def adjust_value(attribution):
-    if .30 <= attribution < .50:
-        return .30
-    elif .50 < attribution <= .70:
-        return .70
-    else:
-        return attribution
+min_attribution = min(attributions)
+max_attribution = max(attributions)
 
+# Function to normalize and scale the attributions
+def scale_attribution(value, min_val, max_val, new_min, new_max):
+    normalized = (value - min_val) / (max_val - min_val)
+    return normalized * (new_max - new_min) + new_min
 
-# Create heatmap based on attributions
-for word, attribution in zip(words[1:], attributions[1:]):
+# Scale the attributions to the new range of 0.2 to 1.0
+scaled_attributions = [scale_attribution(attr, min_attribution, max_attribution, 0.2, 1.0) for attr in attributions]
+
+# Create heatmap based on scaled attributions
+for word, scaled_attr in zip(words[1:], scaled_attributions[1:]): # Skip "<startoftext>"
     if will_text_exceed_width(word, x_pos, heatmap_image.width, font):
         # Move to next line if the word exceeds the width
         x_pos = 0
         y_pos += line_height
 
-    color_value = (attribution / 100) * 5
-    color_value = adjust_value(color_value)
-    color = mcolors.to_hex(plt.cm.RdBu(1 - color_value)) # using hot colormap
+    color = mcolors.to_hex(plt.cm.Reds(scaled_attr)) 
     draw.text((x_pos, y_pos), word, fill=color, font=font)
     x_pos += font.getlength(word) + 5  # Adjust x position for next word
 
@@ -213,6 +214,5 @@ combined_image = Image.new("RGBA", (original_image.width, original_image.height 
 combined_image.paste(original_image, (0, 0))
 combined_image.paste(heatmap_image, (0, original_image.height))
 
-# Convert to RGB and save
 combined_image_rgb = combined_image.convert("RGB")
 combined_image_rgb.save('./modified_image.jpg', 'JPEG')
