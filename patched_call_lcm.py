@@ -1,8 +1,11 @@
 from diffusers import LatentConsistencyModelPipeline
-from diffusers.pipelines.stable_diffusion.pipeline_output import StableDiffusionPipelineOutput
+from diffusers.pipelines.stable_diffusion.pipeline_output import (
+    StableDiffusionPipelineOutput,
+)
 import torch.utils.checkpoint as checkpoint
 import torch
 from typing import List, Optional, Union, Callable, Any, Dict
+
 
 def patched_call_lcm(
     self,
@@ -99,7 +102,14 @@ def patched_call_lcm(
     width = width or self.unet.config.sample_size * self.vae_scale_factor
 
     # 1. Check inputs. Raise error if not correct
-    self.check_inputs(prompt, height, width, callback_steps, prompt_embeds, callback_on_step_end_tensor_inputs)
+    self.check_inputs(
+        prompt,
+        height,
+        width,
+        callback_steps,
+        prompt_embeds,
+        callback_on_step_end_tensor_inputs,
+    )
     self._guidance_scale = guidance_scale
     self._clip_skip = clip_skip
     self._cross_attention_kwargs = cross_attention_kwargs
@@ -117,7 +127,9 @@ def patched_call_lcm(
 
     # 3. Encode input prompt
     lora_scale = (
-        self.cross_attention_kwargs.get("scale", None) if self.cross_attention_kwargs is not None else None
+        self.cross_attention_kwargs.get("scale", None)
+        if self.cross_attention_kwargs is not None
+        else None
     )
 
     # NOTE: when a LCM is distilled from an LDM via latent consistency distillation (Algorithm 1) with guided
@@ -136,7 +148,9 @@ def patched_call_lcm(
     )
 
     # 4. Prepare timesteps
-    self.scheduler.set_timesteps(num_inference_steps, device, original_inference_steps=original_inference_steps)
+    self.scheduler.set_timesteps(
+        num_inference_steps, device, original_inference_steps=original_inference_steps
+    )
     timesteps = self.scheduler.timesteps
 
     # 5. Prepare latent variable
@@ -158,9 +172,9 @@ def patched_call_lcm(
     # CFG formulation, so we need to subtract 1 from the input guidance_scale.
     # LCM CFG formulation:  cfg_noise = noise_cond + cfg_scale * (noise_cond - noise_uncond), (cfg_scale > 0.0 using CFG)
     w = torch.tensor(self.guidance_scale - 1).repeat(bs)
-    w_embedding = self.get_guidance_scale_embedding(w, embedding_dim=self.unet.config.time_cond_proj_dim).to(
-        device=device, dtype=latents.dtype
-    )
+    w_embedding = self.get_guidance_scale_embedding(
+        w, embedding_dim=self.unet.config.time_cond_proj_dim
+    ).to(device=device, dtype=latents.dtype)
 
     # 7. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
     extra_step_kwargs = self.prepare_extra_step_kwargs(generator, None)
@@ -184,10 +198,13 @@ def patched_call_lcm(
                     return_dict=False,
                 )[0]
                 return model_pred
+
             model_pred = checkpoint.checkpoint(run_unet, latents, use_reentrant=False)
 
             # compute the previous noisy sample x_t -> x_t-1
-            latents, denoised = self.scheduler.step(model_pred, t, latents, **extra_step_kwargs, return_dict=False)
+            latents, denoised = self.scheduler.step(
+                model_pred, t, latents, **extra_step_kwargs, return_dict=False
+            )
             if callback_on_step_end is not None:
                 callback_kwargs = {}
                 for k in callback_on_step_end_tensor_inputs:
@@ -200,7 +217,9 @@ def patched_call_lcm(
                 denoised = callback_outputs.pop("denoised", denoised)
 
             # call the callback, if provided
-            if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
+            if i == len(timesteps) - 1 or (
+                (i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0
+            ):
                 progress_bar.update()
                 if callback is not None and i % callback_steps == 0:
                     step_idx = i // getattr(self.scheduler, "order", 1)
@@ -208,8 +227,12 @@ def patched_call_lcm(
 
     denoised = denoised.to(prompt_embeds.dtype)
     if not output_type == "latent":
-        image = self.vae.decode(denoised / self.vae.config.scaling_factor, return_dict=False)[0]
-        image, has_nsfw_concept = self.run_safety_checker(image, device, prompt_embeds.dtype)
+        image = self.vae.decode(
+            denoised / self.vae.config.scaling_factor, return_dict=False
+        )[0]
+        image, has_nsfw_concept = self.run_safety_checker(
+            image, device, prompt_embeds.dtype
+        )
     else:
         image = denoised
         has_nsfw_concept = None
@@ -219,7 +242,9 @@ def patched_call_lcm(
     else:
         do_denormalize = [not has_nsfw for has_nsfw in has_nsfw_concept]
 
-    image = self.image_processor.postprocess(image, output_type=output_type, do_denormalize=do_denormalize)
+    image = self.image_processor.postprocess(
+        image, output_type=output_type, do_denormalize=do_denormalize
+    )
 
     # Offload all models
     self.maybe_free_model_hooks()
@@ -227,5 +252,6 @@ def patched_call_lcm(
     if not return_dict:
         return (image, has_nsfw_concept)
 
-    return StableDiffusionPipelineOutput(images=image, nsfw_content_detected=has_nsfw_concept)
-
+    return StableDiffusionPipelineOutput(
+        images=image, nsfw_content_detected=has_nsfw_concept
+    )
