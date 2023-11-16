@@ -139,7 +139,7 @@ class LlavaRewardQA:
 
         return x
 
-    def __call__(self, pixel_values: torch.Tensor, batched_prompt_d: List[Dict]):
+    def __call__(self, pixel_values: torch.Tensor, question, options, answer):
         """
         pixel_values: batch of pixel values
         batched_prompt_d: batch of prompt dicts, where each dict has a prompt_qa_questions, prompt_qa_answers and prompt_qa_options
@@ -156,54 +156,27 @@ class LlavaRewardQA:
             self._process_image_pixels(pixel_values).to(self.device).to(self.dtype)
         )
 
-        b = pixel_values.shape[0]
+        inp = f"{question}\nAnswer with the option’s letter from the given choices directly.\n{options}"
+        inp = DEFAULT_IMAGE_TOKEN + "\n" + inp
+        conv = self.conv_template.copy()
+        conv.append_message(conv.roles[0], inp)
+        conv.append_message(conv.roles[1], None)
+        prompt = conv.get_prompt()
+        input_ids = tokenizer_image_token(
+            prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt"
+        ).to(self.device).unsqueeze(0)
 
-        question_to_pixel_i = [] 
-        batched_input_ids = []
-        answer_ids = []
-        for batch_i, prompt_d in enumerate(batched_prompt_d):
-            questions = prompt_d["prompt_qa_questions"]
-            answers = prompt_d["prompt_qa_answers"]
-            options = prompt_d["prompt_qa_options"]
+        answer_id = self.tokenizer(
+            answer,
+            add_special_tokens=False,
+        )[
+            "input_ids"
+        ][0]
 
-            # does all the questions
-            # maybe this should be changed to be a random question
-            for q, a, opts in zip(questions, answers, options):
-                inp = f"{q}\nAnswer with the option’s letter from the given choices directly.\n{opts}"
-                inp = DEFAULT_IMAGE_TOKEN + "\n" + inp
-                conv = self.conv_template.copy()
-                conv.append_message(conv.roles[0], inp)
-                conv.append_message(conv.roles[1], None)
-                prompt = conv.get_prompt()
-                input_ids = tokenizer_image_token(
-                    prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt"
-                ).to(self.device)
-                batched_input_ids.append({"input_ids": input_ids})
+        outputs = self.model(images=pixel_values, return_dict=True, input_ids=input_ids)
 
-                question_to_pixel_i.append(batch_i)
+        # we want the correct answer token to be really positive
+        # and we want the other answer tokens to be really negative
+        reward = outputs.logits[0, -1, answer_id]
 
-                answer_id = self.tokenizer(
-                    a,
-                    add_special_tokens=False,
-                )[
-                    "input_ids"
-                ][0]
-                answer_ids.append(answer_id)
-
-
-
-        loss = 0.0
-        # runs with batch size of 1
-        for batch_i, input_ids, answer_id in zip(question_to_pixel_i, batched_input_ids, answer_ids):
-            model_inputs = self.collator([input_ids])
-            model_inputs = {k: v.to(self.device) for k, v in model_inputs.items()}
-            outputs = self.model(images=pixel_values[batch_i].unsqueeze(0), return_dict=True, **model_inputs)
-
-            # we want the correct answer token to be really positive
-            # and we want the other answer tokens to be really negative
-            reward = outputs.logits[0, -1, answer_id]
-            loss = loss - reward
-
-        loss = loss / len(question_to_pixel_i)
-
-        return loss, -loss
+        return -reward, reward
