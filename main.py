@@ -86,7 +86,7 @@ def call_pipe_and_get_prompt_grads(pipe, prompt:str, seed:int, pipe_kwargs={},
             self=pipe,
             prompt=prompt,
             output_type="pt",
-            num_inference_steps=4,
+            num_inference_steps=8,
             **pipe_kwargs,
         )
         image = out.images[0].unsqueeze(0)
@@ -122,7 +122,7 @@ def integrated_grads(
 ):
     gs_start = 0.000001
 
-    gs_end = 1.5
+    gs_end = 1.7
 
     ig_steps = 5
 
