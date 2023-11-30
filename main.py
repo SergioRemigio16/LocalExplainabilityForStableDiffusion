@@ -1,3 +1,4 @@
+import os
 import numpy as np
 from typing import List
 from transformers import CLIPModel, CLIPProcessor
@@ -6,6 +7,7 @@ from torchvision import transforms
 import torch
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+import random
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from PIL import Image, ImageDraw, ImageFont
@@ -26,6 +28,7 @@ dtype = torch.float32
 
 # Set seed for deterministic outcome
 seed = 16
+random.seed(seed)
 torch.manual_seed(seed)
 torch.cuda.manual_seed_all(seed)
 generator = torch.Generator(device=device).manual_seed(seed)
@@ -119,18 +122,21 @@ def integrated_grads(
     prompts,
     seed=42,
     pipe_kwargs={},
+    questions=["What is the quality of this image?", "What is the main subject of this image?", "What things are in this image?"],
+    question_options=["A. Terrible\nB. Poor\nC. Ok\nD. Good\nE. Excellent", "A. A cripsy red apple\nB. An apple logo\nC. A apple that is black and decomposing\nD. A decomposing apple with a worm in it", "A. Apple in the tree\nB. Apple on a branch\n C. Apple on a table\nD. A worm eating an apple"],
+    answers=["E", "D", "D"],
 ):
     gs_start = 0.000001
 
-    gs_end = 1.7
+    gs_end = 1.5
 
-    ig_steps = 5
+    ig_steps = 10
 
     grads = 0.0
     for guidance_scale in tqdm(np.linspace(gs_start, gs_end, ig_steps)):
         pipe_kwargs["guidance_scale"] = guidance_scale
         new_grads, hidden_states, images = call_pipe_and_get_prompt_grads(
-            pipe, prompts, seed, pipe_kwargs
+            pipe, prompts, seed, pipe_kwargs,questions, question_options, answers,
         )
         grads = grads + new_grads
 
@@ -140,19 +146,34 @@ def integrated_grads(
     return grads, hidden_states, images
 
 
-prompt = "A photograph of a bowl full of berries"
-prompt = "The artwork portrays a cute goblin girl with a devious expression and a playful air. She has delicate, sharp features and large, alert eyes that seem to radiate curiosity and intelligence. Her ears are large and pointed, a signature feature of goblins. Her hair is a wild, dark mess, adding to her wild and untamed nature."
-prompt = "A tense, dramatic scene from the television series Peaky Blinders. The air is thick with anticipation as two rival gangs prepare to fight in the dark woods. A cabin stands in the background, providing a looming presence and the potential for escape or refuge. The faces of the gang members are covered in shadows, their features sharp and defined. The image is rendered in black and white, providing a stark and timeless atmosphere. The focus is on the characters' faces, their expressions ranging from determination to fear, all captured in detailed, symmetrical profiles. The camera is positioned to give a medium-long shot, capturing the full breadth of the scene while maintaining a cinematic and epic feel"
-prompt = "apple photograph black moldy discusting eaten by worms and rotten "
+import labels_qa_handmade
+import average_precision
 
-while True:
-    prompt = input("image prompt:").strip()
-    grads, hidden_states, images = integrated_grads(pipe, prompt, 42)
+# all mean average precisions
+all_maps_at_10 = []
+all_maps_at_5 = []
+# mean average_precision @ inf
+mmap = []
+
+rmap_at_10 = []
+# randomized map at inf
+rmap = []
+
+os.makedirs("out/", exist_ok=True)
+
+for i, (prompt,question,options, answer,token) in enumerate(zip(labels_qa_handmade.prompts,
+                  labels_qa_handmade.questions,
+                  labels_qa_handmade.options,
+                  labels_qa_handmade.answers,
+                  labels_qa_handmade.token)):
+
+    grads, hidden_states, images = call_pipe_and_get_prompt_grads(pipe, prompt, random.randint(0, 10000), {"guidance_scale":1.5}, [question], [options], [answer])
+    #grads, hidden_states, images = integrated_grads(pipe, prompt, random.randint(0, 10000), {}, [question], [options], [answer])
 
     image = images[0]
 
     plt.imshow(transforms.ToPILImage()(image), interpolation="bicubic")
-    plt.savefig("./image.jpg")
+    plt.savefig(f"./out/{i:03}_generated_image.jpg")
 
     input_ids = pipe.tokenizer(
         prompt, return_tensors="pt", padding="max_length", truncation=True
@@ -167,8 +188,28 @@ while True:
     # Sum the element wise multiplication across the last dimension
     dot_product = (hidden_states * hidden_states_grad).sum(-1)
 
+    ranked_word_indices = dot_product.cpu().sort(descending=True).indices
+
     dot_product = dot_product - dot_product.min()
     dot_product = dot_product / dot_product.sum()
+
+    target_tokens = [token]
+
+    all_maps_at_10.append(average_precision.apk(target_tokens, ranked_word_indices.tolist(), k=10))
+    all_maps_at_5.append(average_precision.apk(target_tokens, ranked_word_indices.tolist(), k=5))
+    mmap.append(average_precision.apk(target_tokens, ranked_word_indices.tolist(), k=len(ranked_word_indices)))
+
+    print("mAP: ", mmap[-1])
+    print("perfect precision:",average_precision.apk([ranked_word_indices.tolist()[0]], ranked_word_indices.tolist(), k=len(ranked_word_indices)))
+
+    _rmaps = []
+    _rmaps_at_10 = []
+    for _ in range(20):
+        ranked_word_indices_random = np.random.permutation(len(ranked_word_indices))
+        _rmaps.append(average_precision.apk(target_tokens, ranked_word_indices_random.tolist(), k=len(ranked_word_indices)))
+        _rmaps_at_10.append(average_precision.apk(target_tokens, ranked_word_indices_random.tolist(), k=10))
+    rmap.append(np.array(_rmaps).mean())
+    rmap_at_10.append(np.array(_rmaps_at_10).mean())
 
 
     for attribution, token_id in zip(dot_product, input_ids):
@@ -194,7 +235,7 @@ while True:
     draw = ImageDraw.Draw(heatmap_image)
 
     # Use a specific TrueType font with increased size
-    font_size = 16
+    font_size = 24
     font_path = "OpenSans-Regular.ttf"
     font = ImageFont.truetype(font_path, font_size)
 
@@ -244,4 +285,17 @@ while True:
     combined_image.paste(heatmap_image, (0, original_image.height))
 
     combined_image_rgb = combined_image.convert("RGB")
-    combined_image_rgb.save("./modified_image.jpg", "JPEG")
+    combined_image_rgb.save(f"./out/{i:03}modified_image.jpg", "JPEG")
+
+    print("Average mAP @ 5", np.array(all_maps_at_5).mean())
+    print("Average mAP @ 10", np.array(all_maps_at_10).mean())
+    print("Average mAP @ inf", np.array(mmap).mean())
+    print("Average random mAP @ inf", np.array(rmap).mean())
+
+print("Average mAP @ 5", np.array(all_maps_at_5).mean())
+print("Average mAP @ 10", np.array(all_maps_at_10).mean())
+print("Average mAP @ inf", np.array(mmap).mean())
+print("Average mAP @ inf 95% CI", average_precision.mean_confidence_interval(mmap))
+print("Average random mAP @ inf", np.array(rmap).mean())
+print("Average random mAP @ inf 95% CI", average_precision.mean_confidence_interval(rmap))
+print("Average random mAP @ 10", np.array(rmap_at_10).mean())

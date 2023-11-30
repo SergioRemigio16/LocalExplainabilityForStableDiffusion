@@ -111,7 +111,6 @@ class LlavaRewardQA:
         self.model = model
         self.tokenizer = tokenizer
         self.conv_template = llava_conv_templates[conv_mode].copy()
-        self.captioning_prompt = "Describe this image in detail. It is a work in an art installation, and you are a art critic. Describe the composition, colors, and salient items that are portrayed."
         self.device = device
         self.dtype = inference_dtype
 
@@ -177,6 +176,9 @@ class LlavaRewardQA:
 
         # we want the correct answer token to be really positive
         # and we want the other answer tokens to be really negative
-        reward = outputs.logits[0, -1, answer_id]
+        #loss = -outputs.logits[0, -1, answer_id]
 
-        return -reward, reward
+        # just the normal llm loss
+        loss = torch.nn.functional.cross_entropy(outputs.logits[0,-1].unsqueeze(0), torch.LongTensor([answer_id]).to(self.device))
+
+        return loss, -loss
