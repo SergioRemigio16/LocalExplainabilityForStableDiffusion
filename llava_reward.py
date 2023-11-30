@@ -165,6 +165,12 @@ class LlavaRewardQA:
             prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt"
         ).to(self.device).unsqueeze(0)
 
+        # TODO hardcoded 
+        other_anwers = ["A", "B", "C", "D"]
+        assert answer in other_anwers
+        other_anwers.remove(answer)
+        other_answer_ids = [self.tokenizer(x, add_special_tokens=False)["input_ids"][0] for x in other_anwers]
+
         answer_id = self.tokenizer(
             answer,
             add_special_tokens=False,
@@ -174,9 +180,23 @@ class LlavaRewardQA:
 
         outputs = self.model(images=pixel_values, return_dict=True, input_ids=input_ids)
 
+        logits = outputs.logits[0,-1]
+
+        answer_logit = logits[answer_id]
+        all_option_logits = logits[other_answer_ids]
+
+
+        # use torch defaul cross_entropy 
         # we want the correct answer token to be really positive
         # and we want the other answer tokens to be really negative
-        loss = -outputs.logits[0, -1, answer_id]
+        logits = torch.concat([answer_logit.unsqueeze(0), all_option_logits])
+
+        loss = torch.nn.functional.cross_entropy(logits.unsqueeze(0), torch.LongTensor([0]).to(self.device))
+
+        # manual cross entropy
+        #loss = answer_logit.exp() / all_option_logits.exp().sum()
+        
+        #loss = -outputs.logits[0, -1, answer_id]
 
         # just the normal llm loss
         #loss = torch.nn.functional.cross_entropy(outputs.logits[0,-1].unsqueeze(0), torch.LongTensor([answer_id]).to(self.device))

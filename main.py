@@ -14,15 +14,16 @@ from PIL import Image, ImageDraw, ImageFont
 from torchvision import transforms
 
 
-from patched_call import patched_call
+from patched_call import patched_call_sd
 from patched_call_lcm import patched_call_lcm
+from patched_call_sdxl import patched_call_sdxl
 import clip_image_processor
 import clip_text_forward_patch
 
 from llava_reward import LlavaRewardQA
 
 device = "cuda"
-dtype = torch.float32
+dtype = torch.float16
 # device='cpu'
 # dtype = torch.float32
 
@@ -34,7 +35,9 @@ torch.cuda.manual_seed_all(seed)
 generator = torch.Generator(device=device).manual_seed(seed)
 
 # loads stable diffusion pipe
-model_id = "runwayml/stable-diffusion-v1-5"
+model_id = "Lykon/dreamshaper-7"
+#model_id = "stabilityai/sdxl-turbo"
+#model_id = "runwayml/stable-diffusion-v1-5"
 pipe = AutoPipelineForText2Image.from_pretrained(
     model_id, torch_dtype=dtype, variant="fp16"
 ).to(device)
@@ -42,8 +45,8 @@ pipe = AutoPipelineForText2Image.from_pretrained(
 adapter_id = "latent-consistency/lcm-lora-sdv1-5"
 pipe.load_lora_weights(adapter_id)
 pipe.fuse_lora()
-
 pipe.scheduler = LCMScheduler.from_config(pipe.scheduler.config)
+
 
 ## loads Human Preference Score v2
 # clip_model = CLIPModel.from_pretrained("adams-story/HPSv2-hf", torch_dtype=dtype).to(device)
@@ -62,7 +65,8 @@ pipe.text_encoder.requires_grad_(False)
 # Use our patched clip_text_forward method
 pipe.text_encoder.text_model.forward = (
     lambda *args, **kwargs: clip_text_forward_patch.forward(
-        pipe.text_encoder.text_model, *args, **kwargs
+        pipe.text_encoder.text_model, *args,
+        **kwargs
     )
 )
 
@@ -71,6 +75,7 @@ def call_pipe_and_get_prompt_grads(pipe, prompt:str, seed:int, pipe_kwargs={},
     questions=["What is the quality of this image?", "What is the main subject of this image?", "What things are in this image?"],
     question_options=["A. Terrible\nB. Poor\nC. Ok\nD. Good\nE. Excellent", "A. A cripsy red apple\nB. An apple logo\nC. A apple that is black and decomposing\nD. A decomposing apple with a worm in it", "A. Apple in the tree\nB. Apple on a branch\n C. Apple on a table\nD. A worm eating an apple"],
     answers=["E", "D", "D"],
+   n_images_per_prompt=1
        ):
 
 
@@ -79,40 +84,46 @@ def call_pipe_and_get_prompt_grads(pipe, prompt:str, seed:int, pipe_kwargs={},
     grad = 0.0
     ret_hidden_states = None
     ret_image = None
+    pipe_kwargs["generator"] = torch.Generator().manual_seed(seed)
+
+    if pipe_kwargs.get("guidance_scale") is None:
+        pipe_kwargs["guidance_scale"] = 1.7
+
     for question, options, answer in zip(
         questions, question_options, answers
     ):
-        if pipe_kwargs.get("guidance_scale") is None:
-            pipe_kwargs["guidance_scale"] = 1.7
-        pipe_kwargs["generator"] = torch.Generator().manual_seed(seed)
-        out = patched_call(
-            self=pipe,
-            prompt=prompt,
-            output_type="pt",
-            num_inference_steps=8,
-            **pipe_kwargs,
-        )
-        image = out.images[0].unsqueeze(0)
+        for _ in range(n_images_per_prompt):
+            out = patched_call_sd(
+                self=pipe,
+                prompt=prompt,
+                output_type="pt",
+                num_inference_steps=8,
+                **pipe_kwargs,
+            )
+            # batch size of one for loss
+            image = out.images[0].unsqueeze(0)
 
-        # Get the global variable we saved
-        # the 0th hidden state is the text input embedding
-        hidden_states = clip_text_forward_patch.global_hidden_states[0]
-        clip_text_forward_patch.global_hidden_states = []
+            # Get the global variable we saved
+            # the 0th hidden state is the text input embedding
+            hidden_states = clip_text_forward_patch.global_hidden_states[0]
+            clip_text_forward_patch.global_hidden_states = []
 
-        loss, reward = llava_reward_qa(image, question, options, answer)
-        print("got loss rfn", loss)
-        (loss /accum_steps).backward()
+            loss, reward = llava_reward_qa(image, question, options, answer)
+            print("got loss rfn", loss)
+            # scales the loss so that it is bigger and doesn't underflow
+            scale = 1e2
+            ((scale * loss) / (accum_steps * n_images_per_prompt)).backward()
 
-        grad += hidden_states.grad
+            grad += hidden_states.grad
 
-        ret_hidden_states = hidden_states.detach()
-        ret_image = image.detach()
+            ret_hidden_states = hidden_states.detach()
+            ret_image = image.detach()
 
-        del hidden_states
-        del loss
-        del reward
-        torch.cuda.empty_cache()
-        
+            del hidden_states
+            del loss
+            del reward
+            torch.cuda.empty_cache()
+            
 
     return grad, ret_hidden_states, ret_image
 
@@ -167,13 +178,10 @@ for i, (prompt,question,options, answer,token) in enumerate(zip(labels_qa_handma
                   labels_qa_handmade.answers,
                   labels_qa_handmade.token)):
 
-    grads, hidden_states, images = call_pipe_and_get_prompt_grads(pipe, prompt, random.randint(0, 10000), {"guidance_scale":1.5}, [question], [options], [answer])
+    grads, hidden_states, images = call_pipe_and_get_prompt_grads(pipe, prompt, random.randint(0, 10000), {"guidance_scale":0.0}, [question], [options], [answer], n_images_per_prompt=8)
     #grads, hidden_states, images = integrated_grads(pipe, prompt, random.randint(0, 10000), {}, [question], [options], [answer])
 
     image = images[0]
-
-    plt.imshow(transforms.ToPILImage()(image), interpolation="bicubic")
-    plt.savefig(f"./out/{i:03}_generated_image.jpg")
 
     input_ids = pipe.tokenizer(
         prompt, return_tensors="pt", padding="max_length", truncation=True
@@ -204,7 +212,7 @@ for i, (prompt,question,options, answer,token) in enumerate(zip(labels_qa_handma
 
     _rmaps = []
     _rmaps_at_10 = []
-    for _ in range(20):
+    for _ in range(25):
         ranked_word_indices_random = np.random.permutation(len(ranked_word_indices))
         _rmaps.append(average_precision.apk(target_tokens, ranked_word_indices_random.tolist(), k=len(ranked_word_indices)))
         _rmaps_at_10.append(average_precision.apk(target_tokens, ranked_word_indices_random.tolist(), k=10))
@@ -299,3 +307,32 @@ print("Average mAP @ inf 95% CI", average_precision.mean_confidence_interval(mma
 print("Average random mAP @ inf", np.array(rmap).mean())
 print("Average random mAP @ inf 95% CI", average_precision.mean_confidence_interval(rmap))
 print("Average random mAP @ 10", np.array(rmap_at_10).mean())
+
+import scipy.stats
+
+x = ["MCQA","random"]
+y = [np.array(mmap).mean(), np.array(rmap).mean()]
+
+def n5_ci(arr):
+    se = scipy.stats.sem(arr)
+    h = se * scipy.stats.t.ppf((1 + 0.95) / 2., len(arr)-1)
+    return h
+c = [n5_ci(mmap), 0]
+
+plt.close()
+plt.figure(figsize=(3,4))
+plt.bar(x, y)
+plt.errorbar(x, y, yerr=c, fmt="o", color="r")
+plt.ylabel("mAP@inf")
+plt.savefig("./mAP@inf figure.jpg",dpi=300)
+
+plt.close()
+plt.figure(figsize=(3,4))
+y = [np.array(all_maps_at_10).mean(), np.array(rmap_at_10).mean()]
+plt.bar(x, y)
+plt.errorbar(x, y, yerr=c, fmt="o", color="r")
+plt.ylabel("mAP@10")
+plt.savefig("./mAP@10 figure.jpg",dpi=300)
+
+print("ttest @ inf",scipy.stats.ttest_1samp(mmap, np.array(rmap).mean(), alternative='greater'))
+print("ttest @ 10",scipy.stats.ttest_1samp(all_maps_at_10, np.array(rmap_at_10).mean(), alternative='greater'))

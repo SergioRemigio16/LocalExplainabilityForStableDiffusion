@@ -7,7 +7,7 @@ import torch
 from typing import List, Optional, Union, Callable, Any, Dict
 
 
-def patched_call(
+def patched_call_sd(
     self: StableDiffusionPipeline,
     prompt: Union[str, List[str]] = None,
     height: Optional[int] = None,
