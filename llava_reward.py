@@ -176,9 +176,9 @@ class LlavaRewardQA:
 
         # we want the correct answer token to be really positive
         # and we want the other answer tokens to be really negative
-        #loss = -outputs.logits[0, -1, answer_id]
+        loss = -outputs.logits[0, -1, answer_id]
 
         # just the normal llm loss
-        loss = torch.nn.functional.cross_entropy(outputs.logits[0,-1].unsqueeze(0), torch.LongTensor([answer_id]).to(self.device))
+        #loss = torch.nn.functional.cross_entropy(outputs.logits[0,-1].unsqueeze(0), torch.LongTensor([answer_id]).to(self.device))
 
         return loss, -loss
